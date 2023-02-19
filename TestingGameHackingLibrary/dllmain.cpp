@@ -5,6 +5,38 @@
 #include <Windows.h>
 #include <winternl.h>
 
+// Define a type for the NtQuerySystemInformation function
+typedef NTSTATUS(NTAPI* PFN_NTQUERYSYSTEMINFORMATION)(
+    SYSTEM_INFORMATION_CLASS SystemInformationClass,
+    PVOID SystemInformation,
+    ULONG SystemInformationLength,
+    PULONG ReturnLength
+    );
+
+// Define a global pointer to the original NtQuerySystemInformation function
+PFN_NTQUERYSYSTEMINFORMATION g_pfnNtQuerySystemInformation = nullptr;
+
+// Define the detour function for NtQuerySystemInformation
+NTSTATUS NTAPI MyNtQuerySystemInformation(
+    SYSTEM_INFORMATION_CLASS SystemInformationClass,
+    PVOID SystemInformation,
+    ULONG SystemInformationLength,
+    PULONG ReturnLength
+)
+{
+    // Modify the input parameters if necessary
+    // ...
+    std::cout << "hooked";
+    // Call the original function
+    NTSTATUS status = g_pfnNtQuerySystemInformation(SystemInformationClass, SystemInformation, SystemInformationLength, ReturnLength);
+
+    // Modify the output parameters if necessary
+    // ...
+
+    return status;
+}
+
+
 void    x64_detour(DWORD64* target, DWORD64 hook);
 // Define a type for the NtQuerySystemInformation function
 
@@ -20,9 +52,9 @@ typedef NTSTATUS (NTAPI *p_NtCreateFile)(
               ULONG              CreateOptions,
                PVOID              EaBuffer,
                ULONG              EaLength
-);
+); 
 
-p_NtCreateFile ptr = NULL;
+p_NtCreateFile ptr = nullptr;
 
 NTSTATUS CreateFile_Hook(PHANDLE            FileHandle,
     ACCESS_MASK        DesiredAccess,
@@ -37,6 +69,7 @@ NTSTATUS CreateFile_Hook(PHANDLE            FileHandle,
     ULONG              EaLength)
 {
     std::cout << "Hooked" << std::endl;
+
     return(ptr(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize, FileAttributes, ShareAccess, CreateDisposition,
         CreateOptions, EaBuffer, EaLength));
 }
@@ -51,8 +84,8 @@ void    hook()
 
     std::cout << hndl << std::endl;
     std::cout << GetProcAddress(hndl, "NtCreateFile") << std::endl;
-    std::cout << (DWORD64)CreateFile_Hook << std::endl;
-    x64_detour((DWORD64*)GetProcAddress(hndl, "NtCreateFile"), (DWORD64)CreateFile_Hook);
+    std::cout << (DWORD64)MyNtQuerySystemInformation << std::endl;
+    x64_detour((DWORD64*)GetProcAddress(hndl, "NtCreateFile"), (DWORD64)MyNtQuerySystemInformation);
 }
 
 
@@ -64,8 +97,7 @@ void    x64_detour(DWORD64* target, DWORD64 hook)
         0xFF, 0xE0,                                                     // jmp rax
         0x90 }};    //nop
 
-    //*reinterpret_cast<DWORD64*>(jmp_hook.data() + 2) = hook;
-    memcpy((void*)(jmp_hook.data() + 2), (void*)hook, sizeof(hook));
+    *reinterpret_cast<DWORD64*>(jmp_hook.data() + 2) = hook;
 
     
   
