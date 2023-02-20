@@ -4,59 +4,45 @@
 #include <array> 
 #include <Windows.h>
 #include <winternl.h>
+#include "GameHackingLibrary.h"
+#include <dbghelp.h>
 
-// Define a type for the NtQuerySystemInformation function
-typedef NTSTATUS(NTAPI* PFN_NTQUERYSYSTEMINFORMATION)(
-    SYSTEM_INFORMATION_CLASS SystemInformationClass,
-    PVOID SystemInformation,
-    ULONG SystemInformationLength,
-    PULONG ReturnLength
-    );
+g_infos infos;
 
-// Define a global pointer to the original NtQuerySystemInformation function
-PFN_NTQUERYSYSTEMINFORMATION g_pfnNtQuerySystemInformation = nullptr;
-
-// Define the detour function for NtQuerySystemInformation
-NTSTATUS NTAPI MyNtQuerySystemInformation(
-    SYSTEM_INFORMATION_CLASS SystemInformationClass,
-    PVOID SystemInformation,
-    ULONG SystemInformationLength,
-    PULONG ReturnLength
-)
+typedef enum _MEMORY_INFORMATION_CLASS
 {
-    // Modify the input parameters if necessary
-    // ...
-    std::cout << "hooked";
-    // Call the original function
-    NTSTATUS status = g_pfnNtQuerySystemInformation(SystemInformationClass, SystemInformation, SystemInformationLength, ReturnLength);
+    MemoryBasicInformation,				// MEMORY_BASIC_INFORMATION
+    MemoryWorkingSetInformation,		// MEMORY_WORKING_SET_INFORMATION
+    MemoryMappedFilenameInformation,	// UNICODE_STRING
+    MemoryRegionInformation,			// MEMORY_REGION_INFORMATION
+    MemoryWorkingSetExInformation,		// MEMORY_WORKING_SET_EX_INFORMATION
+    MemorySharedCommitInformation,		// MEMORY_SHARED_COMMIT_INFORMATION
+    MemoryImageInformation,				// MEMORY_IMAGE_INFORMATION
+    MemoryRegionInformationEx,
+    MemoryPrivilegedBasicInformation,
+    MemoryEnclaveImageInformation,		// since REDSTONE3
+    MemoryBasicInformationCapped
+} MEMORY_INFORMATION_CLASS;
 
-    // Modify the output parameters if necessary
-    // ...
+typedef struct _SYSTEM_PROCESS_INFO
+{
+    ULONG                   NextEntryOffset;
+    ULONG                   NumberOfThreads;
+    LARGE_INTEGER           Reserved[3];
+    LARGE_INTEGER           CreateTime;
+    LARGE_INTEGER           UserTime;
+    LARGE_INTEGER           KernelTime;
+    UNICODE_STRING          ImageName;
+    ULONG                   BasePriority;
+    HANDLE                  UniqueProcessId;
+    HANDLE                  InheritedFromProcessId;
+    ULONG					HandleCount;
+} SYSTEM_PROCESS_INFO, * PSYSTEM_PROCESS_INFO;
 
-    return status;
-}
 
 
-void    x64_detour(DWORD64* target, DWORD64 hook);
-// Define a type for the NtQuerySystemInformation function
-
-typedef NTSTATUS (NTAPI *p_NtCreateFile)(
-             PHANDLE            FileHandle,
-               ACCESS_MASK        DesiredAccess,
-               POBJECT_ATTRIBUTES ObjectAttributes,
-             PIO_STATUS_BLOCK   IoStatusBlock,
-     PLARGE_INTEGER     AllocationSize,
-              ULONG              FileAttributes,
-               ULONG              ShareAccess,
-               ULONG              CreateDisposition,
-              ULONG              CreateOptions,
-               PVOID              EaBuffer,
-               ULONG              EaLength
-); 
-
-p_NtCreateFile ptr = nullptr;
-
-NTSTATUS CreateFile_Hook(PHANDLE            FileHandle,
+typedef NTSTATUS(NTAPI* p_NtCreateFile)(
+    PHANDLE            FileHandle,
     ACCESS_MASK        DesiredAccess,
     POBJECT_ATTRIBUTES ObjectAttributes,
     PIO_STATUS_BLOCK   IoStatusBlock,
@@ -66,13 +52,64 @@ NTSTATUS CreateFile_Hook(PHANDLE            FileHandle,
     ULONG              CreateDisposition,
     ULONG              CreateOptions,
     PVOID              EaBuffer,
-    ULONG              EaLength)
-{
-    std::cout << "Hooked" << std::endl;
+    ULONG              EaLength
+    );
 
-    return(ptr(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize, FileAttributes, ShareAccess, CreateDisposition,
-        CreateOptions, EaBuffer, EaLength));
+p_NtCreateFile ptr = nullptr;
+
+// ntdll.NtReadVirtualMemory, hiding memory
+typedef NTSTATUS(WINAPI* p_NtReadVirtualMemory)(
+    HANDLE ProcessHandle,
+    PVOID BaseAddress,
+    PVOID Buffer,
+    ULONG NumberOfBytesToRead,
+    PULONG NumberOfBytesReaded
+    );
+
+p_NtReadVirtualMemory g_NtReadVirtualMemory = nullptr;
+
+NTSTATUS NtReadVirtualMemory_Hook(
+    HANDLE ProcessHandle,
+    PVOID BaseAddress,
+    PVOID Buffer,
+    ULONG NumberOfBytesToRead,
+    PULONG NumberOfBytesReaded)
+{
+    std::cout << std::hex << (DWORD64)BaseAddress << "  ---   " << ProcessHandle << "  ---  " 
+        << NumberOfBytesToRead <<std::endl;
+    g_NtReadVirtualMemory = (p_NtReadVirtualMemory)GetProcAddress(infos.ntdllHandelCopy, "NtReadVirtualMemory");
+    return(g_NtReadVirtualMemory(ProcessHandle, BaseAddress, Buffer, NumberOfBytesToRead, NumberOfBytesReaded));
 }
+
+typedef NTSTATUS(NTAPI* p_NtQueryVirtualMemory)(
+    HANDLE                   ProcessHandle,
+    PVOID                    BaseAddress,
+    MEMORY_INFORMATION_CLASS MemoryInformationClass,
+    PVOID                    MemoryInformation,
+    SIZE_T                   MemoryInformationLength,
+    PSIZE_T                  ReturnLength
+    );
+
+p_NtQueryVirtualMemory g_NtQueryVirtualMemory = nullptr;
+
+NTSTATUS NtQueryVirtualMemory_Hook(
+    HANDLE                   ProcessHandle,
+    PVOID                    BaseAddress,
+    MEMORY_INFORMATION_CLASS MemoryInformationClass,
+    PVOID                    MemoryInformation,
+    SIZE_T                   MemoryInformationLength,
+    PSIZE_T                  ReturnLength)
+{
+    std::cout << std::hex << (DWORD64)BaseAddress << "  ---   " << ProcessHandle << std::endl;
+    g_NtQueryVirtualMemory = (p_NtQueryVirtualMemory)GetProcAddress(infos.ntdllHandelCopy, "NtQueryVirtualMemory");
+    return (g_NtQueryVirtualMemory(ProcessHandle, BaseAddress, MemoryInformationClass, MemoryInformation, MemoryInformationLength, ReturnLength));
+}
+
+
+
+
+void    x64_detour(DWORD64* target, DWORD64 hook);
+// Define a type for the NtQuerySystemInformation function
 
 void    hook()
 {
@@ -80,49 +117,29 @@ void    hook()
     FILE* fl;
     freopen_s(&fl, "CONOUT$", "w", stdout);
 
-    HMODULE hndl = GetModuleHandleA("ntdll");
-
-    std::cout << hndl << std::endl;
-    std::cout << GetProcAddress(hndl, "NtCreateFile") << std::endl;
-    std::cout << (DWORD64)MyNtQuerySystemInformation << std::endl;
-    x64_detour((DWORD64*)GetProcAddress(hndl, "NtCreateFile"), (DWORD64)MyNtQuerySystemInformation);
+    CopyFile(L"C:/Windows/System32/ntdll.dll", L"C:/Windows/System32/ntdll_cpy.dll", TRUE);
+    infos.procHandel = GetCurrentProcess();
+    infos.procId = GetProcessId(infos.procHandel);
+    HANDLE                              hFile;
+    hFile = CreateFile(L"memory.dmp", GENERIC_WRITE, FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    infos.ntdllHandel =  GetModuleHandleA("ntdll");
+    infos.ntdllHandelCopy = LoadLibraryA("ntdll_cpy");
+    x64_detour((DWORD64*)GetProcAddress(infos.ntdllHandel, "NtReadVirtualMemory"), (DWORD64)NtReadVirtualMemory_Hook);
 }
 
 
 void    x64_detour(DWORD64* target, DWORD64 hook)
-{ 
-    std::cout << (DWORD64)hook << std::endl;
-    std::array<BYTE, 13> jmp_hook {{
-        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // mov rax, 00000
-        0xFF, 0xE0,                                                     // jmp rax
-        0x90 }};    //nop
-
+{
+    std::array<BYTE, 12> jmp_hook{ {
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // mov rax, 00000 << replaced with our function bytes
+        0xFF, 0xE0                                                      // jmp rax
+        } };
     *reinterpret_cast<DWORD64*>(jmp_hook.data() + 2) = hook;
-
-    
-  
-
     DWORD oldProt = 0;
     VirtualProtectEx(GetCurrentProcess(), (LPVOID)target, jmp_hook.size(), PAGE_EXECUTE_READWRITE, &oldProt);
     WriteProcessMemory(GetCurrentProcess(), (LPVOID)target, jmp_hook.data(), jmp_hook.size(), NULL);
     VirtualProtectEx(GetCurrentProcess(), (LPVOID)target, jmp_hook.size(), oldProt, &oldProt);
-
-}  
-//std::array<uint8_t, 8 + 16> jmp_return =
-  //{ {
-  //        /* Original memory */
-  //        0x00, 0x00, 0x00,												// +00 : mov r10,rcx					<-- (+00) Overwrite
-  //        0x00, 0x00, 0x00, 0x00, 0x00,									// +03 : mov eax,<api number>			<-- (+03) Overwrite
-
-  //        /* Return memory */
-  //        0x50,															// +08 : push rax
-  //        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,		// +09 : mov rax,0000000000000000		<-- (+11) Overwrite
-  //        0x48, 0x87, 0x04, 0x24,											// +19 : xchg [rsp],rax
-  //        0xC3															// +23 : ret
-  //    } };
-
-  //ReadProcessMemory(GetCurrentProcess(), (LPVOID)target, jmp_return.data(), 8, NULL);
-  //reinterpret_cast<DWORD64*>(jmp_return.data() + 11) = (target + 8);
+}
 
 BOOL APIENTRY DllMain( HMODULE hModule,
                        DWORD  ul_reason_for_call,
